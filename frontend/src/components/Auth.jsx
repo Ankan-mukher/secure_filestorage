@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { Mail, Lock, LogIn, UserPlus, Eye, EyeOff, Shield } from 'lucide-react';
 
-const API_URL = 'http://localhost:8000';
+const API_URL = import.meta.env.VITE_API_URL;
 
 export default function Auth() {
   const [isLogin, setIsLogin] = useState(true);

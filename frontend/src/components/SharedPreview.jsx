@@ -3,7 +3,7 @@ import { useParams } from 'react-router-dom';
 import axios from 'axios';
 import { Download, File, Image, Film, FileText, Music, AlertTriangle, ShieldAlert } from 'lucide-react';
 
-const API_URL = 'http://localhost:8000';
+const API_URL = import.meta.env.VITE_API_URL;
 
 const formatBytes = (bytes, decimals = 2) => {
   if (!bytes) return '0 Bytes';
