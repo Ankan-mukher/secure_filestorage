@@ -23,3 +23,6 @@ Thumbs.db
 
 # Uploaded files
 uploads/
+.env
+.env.*
+!.env.example

@@ -3,12 +3,17 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.database.database import Base, engine
 from app.models.user import User
+from app.models.file import File
 from app.routes.auth import router as auth_router
 from app.routes.test_auth import router as test_auth_router
-from app.models.file import File
 from app.routes.files import router as files_router
 
+# Load Cloudinary configuration
+from app import cloudinary_config
+
+
 print("REGISTERED TABLES:", Base.metadata.tables.keys())
+
 Base.metadata.create_all(bind=engine)
 
 
@@ -17,7 +22,7 @@ app = FastAPI(
     description="Secure file storage service built for the Full Stack Engineer assignment.",
     version="1.0.0",
 )
-from fastapi.middleware.cors import CORSMiddleware
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -51,6 +56,7 @@ def health_check():
                 "status": "healthy",
                 "database": "connected"
             }
+
     except Exception as e:
         return {
             "status": "unhealthy",

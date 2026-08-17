@@ -1,6 +1,7 @@
-import os
 import uuid
 from typing import Optional, List
+
+import cloudinary.uploader
 
 from fastapi import (
     APIRouter,
@@ -12,7 +13,7 @@ from fastapi import (
     Query,
     Header,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from jose import jwt, JWTError
 
@@ -31,14 +32,13 @@ router = APIRouter(
 )
 
 
-UPLOAD_DIR = "uploads"
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
 
-os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+# ============================================================
+# AUTHENTICATION HELPER
+# ============================================================
 
-# Helper function to authenticate user via Header or Query Param
-# Used for direct downloads and public files
 def get_user_from_token_or_param(
     db: Session = Depends(get_db),
     authorization: Optional[str] = Header(None),
@@ -72,9 +72,13 @@ def get_user_from_token_or_param(
             User.id == int(user_id)
         ).first()
 
-    except JWTError:
+    except (JWTError, ValueError, TypeError):
         return None
 
+
+# ============================================================
+# UPLOAD FILE
+# ============================================================
 
 @router.post(
     "/upload",
@@ -94,8 +98,9 @@ def upload_file(
             detail="Filename is required"
         )
 
-    # Validate folder ownership if folder_id is provided
+    # Validate folder ownership
     if folder_id is not None:
+
         folder = (
             db.query(Folder)
             .filter(
@@ -112,48 +117,52 @@ def upload_file(
             )
 
     stored_filename = f"{uuid.uuid4()}_{file.filename}"
-    file_path = os.path.join(UPLOAD_DIR, stored_filename)
-
-    total_size = 0
 
     try:
-        with open(file_path, "wb") as buffer:
 
-            while True:
-                chunk = file.file.read(1024 * 1024)
+        file.file.seek(0)
 
-                if not chunk:
-                    break
+        upload_result = cloudinary.uploader.upload(
+            file.file,
+            resource_type="auto",
+            public_id=stored_filename,
+            folder="secure-file-storage"
+        )
 
-                total_size += len(chunk)
+        file_path = upload_result["secure_url"]
 
-                if total_size > MAX_FILE_SIZE:
+        total_size = upload_result.get("bytes", 0)
 
-                    buffer.close()
+        # Enforce 100 MB limit
+        if total_size > MAX_FILE_SIZE:
 
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-
-                    raise HTTPException(
-                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                        detail="File size cannot exceed 100 MB"
+            try:
+                cloudinary.uploader.destroy(
+                    upload_result["public_id"],
+                    resource_type=upload_result.get(
+                        "resource_type",
+                        "image"
                     )
+                )
+            except Exception:
+                pass
 
-                buffer.write(chunk)
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="File size cannot exceed 100 MB"
+            )
 
     except HTTPException:
         raise
 
     except Exception as e:
 
-        if os.path.exists(file_path):
-            os.remove(file_path)
-
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to upload file"
+            detail="Failed to upload file to Cloudinary"
         ) from e
 
+    # Save metadata in database
     new_file = File(
         filename=file.filename,
         stored_filename=stored_filename,
@@ -171,6 +180,10 @@ def upload_file(
 
     return new_file
 
+
+# ============================================================
+# LIST FILES
+# ============================================================
 
 @router.get(
     "",
@@ -190,7 +203,7 @@ def list_files(
         File.owner_id == current_user.id
     )
 
-    # Filter by folder
+    # Folder filter
     if folder_id is not None:
 
         if folder_id == -1:
@@ -201,31 +214,35 @@ def list_files(
                 File.folder_id == folder_id
             )
 
-    # Filter by search term
+    # Search filter
     if search:
         query = query.filter(
             File.filename.ilike(f"%{search}%")
         )
 
-    # Filter by category
+    # Category filter
     if category:
 
         if category == "image":
+
             query = query.filter(
                 File.content_type.like("image/%")
             )
 
         elif category == "video":
+
             query = query.filter(
                 File.content_type.like("video/%")
             )
 
         elif category == "audio":
+
             query = query.filter(
                 File.content_type.like("audio/%")
             )
 
         elif category == "document":
+
             query = query.filter(
                 (File.content_type.like("text/%")) |
                 (File.content_type == "application/pdf") |
@@ -234,6 +251,7 @@ def list_files(
             )
 
         elif category == "other":
+
             query = query.filter(
                 ~File.content_type.like("image/%"),
                 ~File.content_type.like("video/%"),
@@ -244,7 +262,7 @@ def list_files(
                 File.content_type != "application/msword"
             )
 
-    # Validate sorting column
+    # Sorting
     sort_attr = getattr(
         File,
         sort_by,
@@ -252,15 +270,24 @@ def list_files(
     )
 
     if sort_order == "desc":
-        query = query.order_by(sort_attr.desc())
+
+        query = query.order_by(
+            sort_attr.desc()
+        )
 
     else:
-        query = query.order_by(sort_attr.asc())
+
+        query = query.order_by(
+            sort_attr.asc()
+        )
 
     return query.all()
 
 
-# PUBLIC / PRIVATE FILE METADATA
+# ============================================================
+# GET FILE METADATA
+# ============================================================
+
 @router.get(
     "/{file_id}",
     response_model=FileSchema
@@ -280,19 +307,20 @@ def get_file_metadata(
     )
 
     if not file_record:
+
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="File not found"
         )
 
-    # Public files can be viewed by anyone.
-    # Private files can only be viewed by their owner.
+    # Private files require owner authentication
     if not file_record.is_public:
 
         if (
             not current_user
             or file_record.owner_id != current_user.id
         ):
+
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access denied to this file metadata"
@@ -300,6 +328,10 @@ def get_file_metadata(
 
     return file_record
 
+
+# ============================================================
+# DELETE FILE
+# ============================================================
 
 @router.delete(
     "/{file_id}",
@@ -318,26 +350,64 @@ def delete_file(
     )
 
     if not file_record:
+
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="File not found"
         )
 
     if file_record.owner_id != current_user.id:
+
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have permission to delete this file"
         )
 
-    # Delete physical file
-    if os.path.exists(file_record.file_path):
+    # Delete from Cloudinary
+    try:
 
+        public_id = (
+            f"secure-file-storage/"
+            f"{file_record.stored_filename}"
+        )
+
+        # Try image resource type
         try:
-            os.remove(file_record.file_path)
+
+            cloudinary.uploader.destroy(
+                public_id,
+                resource_type="image"
+            )
 
         except Exception:
             pass
 
+        # Try raw resource type
+        try:
+
+            cloudinary.uploader.destroy(
+                public_id,
+                resource_type="raw"
+            )
+
+        except Exception:
+            pass
+
+        # Try video resource type
+        try:
+
+            cloudinary.uploader.destroy(
+                public_id,
+                resource_type="video"
+            )
+
+        except Exception:
+            pass
+
+    except Exception:
+        pass
+
+    # Delete database record
     db.delete(file_record)
     db.commit()
 
@@ -345,6 +415,10 @@ def delete_file(
         "message": "File deleted successfully"
     }
 
+
+# ============================================================
+# UPDATE FILE VISIBILITY
+# ============================================================
 
 @router.patch(
     "/{file_id}/visibility",
@@ -364,18 +438,21 @@ def update_file_visibility(
     )
 
     if not file_record:
+
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="File not found"
         )
 
     if file_record.owner_id != current_user.id:
+
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have permission to modify this file"
         )
 
     if update_data.is_public is not None:
+
         file_record.is_public = update_data.is_public
 
     db.commit()
@@ -383,6 +460,10 @@ def update_file_visibility(
 
     return file_record
 
+
+# ============================================================
+# MOVE FILE TO FOLDER
+# ============================================================
 
 @router.patch(
     "/{file_id}/move",
@@ -402,12 +483,14 @@ def move_file_folder(
     )
 
     if not file_record:
+
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="File not found"
         )
 
     if file_record.owner_id != current_user.id:
+
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have permission to modify this file"
@@ -425,6 +508,7 @@ def move_file_folder(
         )
 
         if not folder:
+
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Folder not found or does not belong to you"
@@ -433,6 +517,7 @@ def move_file_folder(
         file_record.folder_id = update_data.folder_id
 
     else:
+
         file_record.folder_id = None
 
     db.commit()
@@ -441,7 +526,10 @@ def move_file_folder(
     return file_record
 
 
-# PUBLIC / PRIVATE DOWNLOAD
+# ============================================================
+# DOWNLOAD FILE
+# ============================================================
+
 @router.get("/{file_id}/download")
 def download_file(
     file_id: int,
@@ -458,57 +546,51 @@ def download_file(
     )
 
     if not file_record:
+
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="File not found"
         )
 
-    # Private files require authentication and ownership.
-    # Public files can be downloaded anonymously.
+    # Private files require authentication
     if not file_record.is_public:
 
         if (
             not user
             or file_record.owner_id != user.id
         ):
+
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You do not have permission to access this private file"
             )
 
-    # Make sure physical file still exists
-    if not os.path.exists(file_record.file_path):
+    # Make sure Cloudinary URL exists
+    if not file_record.file_path:
+
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Physical file does not exist on disk"
+            detail="Cloudinary file URL does not exist"
         )
 
-    # Security headers
-    headers = {
-        "X-Content-Type-Options": "nosniff"
-    }
-
-    # Images, videos and PDFs can be viewed inline.
-    # Everything else is downloaded.
-    is_inline_type = (
-        file_record.content_type
-        and (
-            file_record.content_type.startswith("image/")
-            or file_record.content_type.startswith("video/")
-            or file_record.content_type == "application/pdf"
-        )
+    # Redirect directly to Cloudinary
+    return RedirectResponse(
+        url=file_record.file_path,
+        status_code=status.HTTP_307_TEMPORARY_REDIRECT
     )
+    
+@router.get("/debug/paths")
+def debug_file_paths(
+    db: Session = Depends(get_db)
+):
+    files = db.query(File).all()
 
-    disposition = (
-        "inline"
-        if is_inline_type
-        else "attachment"
-    )
-
-    return FileResponse(
-        path=file_record.file_path,
-        media_type=file_record.content_type,
-        filename=file_record.filename,
-        headers=headers,
-        content_disposition_type=disposition
-    )
+    return [
+        {
+            "id": file.id,
+            "filename": file.filename,
+            "file_path": file.file_path,
+            "stored_filename": file.stored_filename,
+        }
+        for file in files
+    ]
