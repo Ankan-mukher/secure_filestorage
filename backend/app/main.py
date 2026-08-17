@@ -7,6 +7,7 @@ from app.models.file import File
 from app.routes.auth import router as auth_router
 from app.routes.test_auth import router as test_auth_router
 from app.routes.files import router as files_router
+from app.routes.folders import router as folders_router
 
 # Load Cloudinary configuration
 from app import cloudinary_config
@@ -39,6 +40,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(test_auth_router)
 app.include_router(files_router)
+app.include_router(folders_router)
 
 
 @app.get("/")
