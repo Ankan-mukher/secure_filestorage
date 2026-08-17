@@ -19,10 +19,11 @@ app = FastAPI(
 )
 app.add_middleware(
     CORSMiddleware,
-   allow_origins=[
-    "http://localhost:5173",
-    "https://secure-filestorage-mk9198p74-ankan12.vercel.app",
-],
+    allow_origins=[
+        "http://localhost:5173",
+        "https://secure-filestorage-git-main-ankan12.vercel.app",
+        "https://secure-filestorage-45am8nbnk-ankan12.vercel.app",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
