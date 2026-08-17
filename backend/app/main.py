@@ -17,12 +17,13 @@ app = FastAPI(
     description="Secure file storage service built for the Full Stack Engineer assignment.",
     version="1.0.0",
 )
+from fastapi.middleware.cors import CORSMiddleware
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
-        "https://secure-filestorage-git-main-ankan12.vercel.app",
-        "https://secure-filestorage-45am8nbnk-ankan12.vercel.app",
+        "https://secure-filestorage.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
